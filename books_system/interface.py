@@ -6,7 +6,8 @@ from typing import Dict, List
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QListWidget, QListWidgetItem,
-    QFileDialog, QCheckBox, QSpinBox, QComboBox, QToolButton, QScrollArea
+    QFileDialog, QCheckBox, QSpinBox, QComboBox, QToolButton, QScrollArea,
+    QDialog, QDialogButtonBox
 )
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QPixmap, QImageReader
@@ -15,13 +16,13 @@ from data_loader import read_books, Book
 from preferences import make_prefs
 from recommender import recommend
 
-# === путь к данным (JSON с полем cover) ===
+# === путь к данным (JSON без обложек) ===
 DATA_PATH = "books.json"
 DATA_DIR = Path(DATA_PATH).resolve().parent
 
 def _abs_cover_path(p: str) -> str:
-    pth = Path(p)
-    return str(pth if pth.is_absolute() else (DATA_DIR / pth).resolve())
+    # функция больше не используется, можно оставить как заглушку
+    return str(Path(p))
 
 # ------------------ Виджет карточки книги ------------------
 class BookCard(QWidget):
@@ -32,15 +33,11 @@ class BookCard(QWidget):
         row = QHBoxLayout(self)
         row.setContentsMargins(12, 10, 12, 10); row.setSpacing(12)
 
-        # Обложка
-        cover = QLabel()
-        cover.setFixedSize(QSize(80, 120))
-        path = str(book.get("cover", ""))
-        reader = QImageReader(path); reader.setAutoTransform(True); reader.setDecideFormatFromContent(True)
-        img = reader.read(); pix = QPixmap.fromImage(img)
-        if not pix.isNull():
-            cover.setPixmap(pix.scaled(80, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        row.addWidget(cover)
+        # Обложка убрана: только текстовая часть
+        # Левая колонка — просто отступ
+        spacer = QWidget()
+        spacer.setFixedSize(QSize(0, 0))
+        row.addWidget(spacer)
 
         # Тексты
         col = QVBoxLayout()
@@ -70,16 +67,23 @@ class MainWindow(QMainWindow):
         self.recommendations: List[Book] = []
         self.to_read: List[Book] = []
 
-        # === ЖАНРЫ как чекбоксы ===
-        self.genre_cbs: List[QCheckBox] = []
-        genre_row_widget = QWidget()
-        genre_row_layout = QHBoxLayout(genre_row_widget)
-        genre_row_layout.setContentsMargins(0, 0, 0, 0); genre_row_layout.setSpacing(8)
-        for g in self._collect_genres(self.books_db):
-            cb = QCheckBox(g)
-            self.genre_cbs.append(cb)
-            genre_row_layout.addWidget(cb)
-        genre_row_layout.addStretch(1)
+        # === ЖАНРЫ: компактный выбор через диалог ===
+        self.all_genres: List[str] = self._collect_genres(self.books_db)
+        self.selected_genres: List[str] = []  # храним выбор отдельно
+
+        self.genres_display = QLineEdit()
+        self.genres_display.setReadOnly(True)
+        self.genres_display.setPlaceholderText("Все жанры")
+
+        self.genres_btn = QPushButton("Выбрать жанры…")
+        self.genres_btn.clicked.connect(self.on_select_genres)
+
+        genres_row_widget = QWidget()
+        genres_row_layout = QHBoxLayout(genres_row_widget)
+        genres_row_layout.setContentsMargins(0, 0, 0, 0)
+        genres_row_layout.setSpacing(8)
+        genres_row_layout.addWidget(self.genres_display, stretch=1)
+        genres_row_layout.addWidget(self.genres_btn)
 
         # === АВТОРЫ: выпадающий список + «чипы» выбранных авторов ===
         self.author_combo = QComboBox()
@@ -132,7 +136,9 @@ class MainWindow(QMainWindow):
         root = QWidget(); self.setCentralWidget(root)
         layout = QVBoxLayout(root)
 
-        row_genres = QHBoxLayout(); row_genres.addWidget(QLabel("Жанры:")); row_genres.addWidget(genre_row_widget, stretch=1)
+        row_genres = QHBoxLayout()
+        row_genres.addWidget(QLabel("Жанры:"))
+        row_genres.addWidget(genres_row_widget, stretch=1)
 
         row_author = QHBoxLayout()
         row_author.addWidget(QLabel("Авторы:"))
@@ -226,10 +232,58 @@ class MainWindow(QMainWindow):
             w.deleteLater()
         # self.on_recommend()  # если хочется автообновление — раскомментируйте
 
+    def on_select_genres(self):
+        """Открыть диалог выбора жанров с прокруткой."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Выбор жанров")
+        dlg.resize(420, 320)
+
+        v = QVBoxLayout(dlg)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setContentsMargins(8, 8, 8, 8)
+        inner_layout.setSpacing(4)
+
+        # создаём чекбоксы по всем жанрам
+        genre_cbs: List[QCheckBox] = []
+        for g in self.all_genres:
+            cb = QCheckBox(g)
+            cb.setChecked(g in self.selected_genres or not self.selected_genres)
+            genre_cbs.append(cb)
+            inner_layout.addWidget(cb)
+        inner_layout.addStretch(1)
+
+        scroll.setWidget(inner)
+        v.addWidget(scroll)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        v.addWidget(buttons)
+
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+
+        if dlg.exec_() == QDialog.Accepted:
+            # сохранить выбор
+            self.selected_genres = [cb.text() for cb in genre_cbs if cb.isChecked()]
+            # обновить отображение
+            if self.selected_genres:
+                self.genres_display.setText(", ".join(self.selected_genres))
+            else:
+                self.genres_display.clear()
+            # сразу пересчитать рекомендации
+            self.on_recommend()
+
     # ---- handlers ----
     def on_recommend(self):
-        # жанры из чекбоксов
-        genres_text = ", ".join(cb.text() for cb in self.genre_cbs if cb.isChecked())
+        # жанры — из выбранного списка, а не из чекбоксов
+        if self.selected_genres:
+            genres_text = ", ".join(self.selected_genres)
+        else:
+            genres_text = ""  # пусто = все жанры
+
         # авторы из выбранных «чипов»
         authors_text = ", ".join(self.selected_authors)
         prefs = make_prefs(genres_text, authors_text, self.keywords_edit.text())
@@ -258,11 +312,17 @@ class MainWindow(QMainWindow):
         else:
             with open(path, "w", encoding="utf-8", newline="") as f:
                 w = csv.writer(f, delimiter=";")
-                w.writerow(["title","author","genre","year","description","score","cover"])
+                # cover столбец удалён
+                w.writerow(["title","author","genre","year","description","score"])
                 for b in self.recommendations:
-                    w.writerow([b.get("title",""), b.get("author",""), b.get("genre",""),
-                                b.get("year",""), b.get("description",""), b.get("score",0),
-                                b.get("cover","")])
+                    w.writerow([
+                        b.get("title",""),
+                        b.get("author",""),
+                        b.get("genre",""),
+                        b.get("year",""),
+                        b.get("description",""),
+                        b.get("score",0),
+                    ])
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
